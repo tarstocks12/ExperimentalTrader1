@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ArrowUpRight, ArrowDownRight, RefreshCw, ExternalLink, ShieldCheck } from 'lucide-react';
 import { Timeframe } from '../types';
 import { FNO_SYMBOLS_LIST, NIFTY_500_SYMBOLS_LIST } from '../data/watchlists';
+import { computeD1ToD4CombinedLaya } from '../lib/laya-engine';
+import { LayaIntelCell } from './LayaIntelCell';
 
 interface Top10Row {
   symbol: string;
@@ -10,6 +12,7 @@ interface Top10Row {
   reversalBullScore: number;
   reversalBearScore: number;
   tfData: any;
+  fullRow?: any;
 }
 
 export default function Top10Dashboard({ personalSymbols = [] }: { personalSymbols?: string[] }) {
@@ -78,7 +81,7 @@ export default function Top10Dashboard({ personalSymbols = [] }: { personalSymbo
     const scored: Top10Row[] = data.map(row => {
       const tfData = row.timeframes?.[activeTimeframe];
       if (!tfData || tfData.isUnavailable) {
-        return { symbol: row.Symbol, bullScore: 0, bearScore: 0, reversalBullScore: 0, reversalBearScore: 0, tfData: null };
+        return { symbol: row.Symbol, bullScore: 0, bearScore: 0, reversalBullScore: 0, reversalBearScore: 0, tfData: null, fullRow: row };
       }
 
       let bull = 0;
@@ -152,7 +155,7 @@ export default function Top10Dashboard({ personalSymbols = [] }: { personalSymbo
       if (tfData.isBull && tfData.barsSinceCross < 3) bull += 10;
       if (tfData.isBear && tfData.barsSinceCross < 3) bear += 10;
 
-      return { symbol: row.Symbol, bullScore: bull, bearScore: bear, reversalBullScore: revBull, reversalBearScore: revBear, tfData };
+      return { symbol: row.Symbol, bullScore: bull, bearScore: bear, reversalBullScore: revBull, reversalBearScore: revBear, tfData, fullRow: row };
     });
 
     const validData = scored.filter(s => s.tfData !== null);
@@ -222,6 +225,10 @@ export default function Top10Dashboard({ personalSymbols = [] }: { personalSymbo
             <span className={`px-2 py-0.5 rounded text-xs font-medium ${item.tfData.isTsiBull ? 'bg-emerald-500/10 text-emerald-400' : item.tfData.isTsiBear ? 'bg-rose-500/10 text-rose-400' : 'bg-slate-700 text-slate-400'}`}>
               D4 TSI
             </span>
+          </div>
+          <div className="border-l border-slate-700/60 pl-3">
+            <div className="text-[9px] uppercase font-mono text-orange-400/90 text-center mb-0.5">Laya Intel</div>
+            <LayaIntelCell intel={computeD1ToD4CombinedLaya(item.fullRow || { timeframes: { [activeTimeframe]: item.tfData } }).combinedLayaIntel} compact />
           </div>
           <button className={`px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 transition-colors ${isBull ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20'}`}>
             {isBull ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}

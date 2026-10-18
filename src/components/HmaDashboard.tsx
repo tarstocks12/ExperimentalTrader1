@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { Timeframe } from "../types.js";
 import { FNO_SYMBOLS_LIST, NIFTY_500_SYMBOLS_LIST } from "../data/watchlists.js";
+import { computeLayaPreTurnIntel } from "../lib/laya-engine.js";
+import { LayaIntelCell } from "./LayaIntelCell.js";
 
 interface HmaTimeframeData {
   hmaOpen: number;
@@ -227,10 +229,13 @@ export default function HmaDashboard({ personalSymbols }: HmaDashboardProps) {
       hmaStrengthLabel = "STRONG BEAR";
     }
 
+    const layaIntel = computeLayaPreTurnIntel({ ...row, timeframes: mappedTimeframes }, "d1_hma");
+
     return {
       ...row,
       hmaStrength,
       hmaStrengthLabel,
+      layaIntel,
       timeframes: mappedTimeframes
     };
   });
@@ -300,6 +305,9 @@ export default function HmaDashboard({ personalSymbols }: HmaDashboardProps) {
     } else if (sortField === "hmaStrength") {
       valA = a.hmaStrength;
       valB = b.hmaStrength;
+    } else if (sortField === "layaIntel") {
+      valA = a.layaIntel?.score ?? 50;
+      valB = b.layaIntel?.score ?? 50;
     } else {
       // Timeframe sorting
       const tf = sortField as Timeframe;
@@ -585,6 +593,23 @@ export default function HmaDashboard({ personalSymbols }: HmaDashboardProps) {
                       </div>
                     </th>
 
+                    <th 
+                      className="py-3.5 px-4 cursor-pointer hover:bg-[#15171e] hover:text-white transition-all text-center w-[175px]"
+                      onClick={() => handleSort("layaIntel")}
+                    >
+                      <div className="flex flex-col items-center space-y-0.5 justify-center">
+                        <div className="flex items-center space-x-1.5 justify-center text-emerald-400">
+                          <span>Laya Intelligence</span>
+                          <span className="font-bold text-[9px]">
+                            {sortField === "layaIntel" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}
+                          </span>
+                        </div>
+                        <span className="text-[7.5px] font-mono text-[#8e9299] opacity-80 tracking-tight uppercase">
+                          Pre-Turn Bull / Bear
+                        </span>
+                      </div>
+                    </th>
+
                     {timeframes.map(tf => (
                       <th 
                         key={tf}
@@ -686,6 +711,15 @@ export default function HmaDashboard({ personalSymbols }: HmaDashboardProps) {
                                   {row.hmaStrengthLabel}
                                 </span>
                               </div>
+                            )}
+                          </td>
+
+                          {/* Laya Intelligence Score Column */}
+                          <td className="py-3.2 px-3 text-center font-sans">
+                            {row.isUnavailable ? (
+                              <span className="text-zinc-500 font-bold font-mono">---</span>
+                            ) : (
+                              <LayaIntelCell intel={row.layaIntel} />
                             )}
                           </td>
 

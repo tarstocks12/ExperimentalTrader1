@@ -40,6 +40,9 @@ import ScreenerD7 from "./components/ScreenerD7.js";
 import { D8Screener } from "./components/D8Screener.js";
 import Top10Dashboard from "./components/Top10Dashboard.js";
 import NextDaySmartDashboard from "./components/NextDaySmartDashboard.js";
+import D1ToD4LayaDashboard from "./components/D1ToD4LayaDashboard.js";
+import { LayaIntelCell } from "./components/LayaIntelCell.js";
+import { computeD5ComboLayaIntel } from "./lib/laya-engine.js";
 import { getRowReversalTrade, getAdvancedAdaptiveReversal } from "./lib/reversal-engine.js";
 import { DEFAULT_PERSONAL_SYMBOLS, FNO_SYMBOLS_LIST, NIFTY_500_SYMBOLS_LIST } from "./data/watchlists.js";
 import { isLongSignal, isShortSignal } from "./lib/pine-math.js";
@@ -400,7 +403,7 @@ const generateClientFallbackHistory = (symbol: string, tf: Timeframe): any[] => 
 export default function App() {
   const [activeTimeframe, setActiveTimeframe] = useState<Timeframe>("1H");
   const [engine, setEngine] = useState<string>("quant_swt");
-  const [activeTab, setActiveTab] = useState<"dashboard" | "technical_indicators" | "screener" | "notifications" | "wt_dashboard" | "wt_ema_dashboard" | "wt_hma_dashboard" | "ema_dashboard" | "tsi_dashboard" | "hma_dashboard" | "top10_dashboard" | "next_day_dashboard">("next_day_dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "technical_indicators" | "screener" | "notifications" | "wt_dashboard" | "wt_ema_dashboard" | "wt_hma_dashboard" | "ema_dashboard" | "tsi_dashboard" | "hma_dashboard" | "d1_d4_laya" | "d8_screener" | "top10_dashboard" | "next_day_dashboard">("next_day_dashboard");
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
 
   // Screener Page Specific States
@@ -527,6 +530,7 @@ export default function App() {
     ConfActionAI: true,
     ConflActionStack: true,
     ReversalAI: true,
+    LayaIntel: true,
     Price: true,
     ChangePercent: true,
     BestEntry: true,
@@ -1709,6 +1713,9 @@ export default function App() {
       // Bullish counts as positive, Bearish as negative, wait as close to zero
       valA = infoA.action === "BULLISH NEXT DAY" ? infoA.score : (infoA.action === "BEARISH NEXT DAY" ? -infoA.score : 0);
       valB = infoB.action === "BULLISH NEXT DAY" ? infoB.score : (infoB.action === "BEARISH NEXT DAY" ? -infoB.score : 0);
+    } else if (sortField === "LayaIntel") {
+      valA = computeD5ComboLayaIntel(a).signedScore;
+      valB = computeD5ComboLayaIntel(b).signedScore;
     }
 
     if (valA === valB) return 0;
@@ -1802,6 +1809,16 @@ export default function App() {
             }`}
           >
             D4 — TSI
+          </button>
+          <button
+            onClick={() => setActiveTab("d1_d4_laya")}
+            className={`px-3 py-1.5 text-[11px] font-mono font-extrabold tracking-wider rounded transition-all cursor-pointer ${
+              activeTab === "d1_d4_laya"
+                ? "bg-orange-500 text-black shadow-md shadow-orange-500/20"
+                : "text-orange-400 hover:text-white bg-orange-500/10 border border-orange-500/30 hover:bg-orange-500/20"
+            }`}
+          >
+            D1–D4 LAYA
           </button>
           <button
             onClick={() => setActiveTab("dashboard")}
@@ -2333,7 +2350,7 @@ export default function App() {
                   <button 
                     onClick={() => setVisibleColumns({
                       Symbol: true, NextDayTrade: true, LearnedEdge: true, ConfActionAI: true, ConflActionStack: true, ReversalAI: true,
-                      Price: true, ChangePercent: true, BestEntry: true
+                      Price: true, ChangePercent: true, BestEntry: true, LayaIntel: true
                     })}
                     className="text-[10px] text-orange-400 hover:text-orange-300 underline cursor-pointer font-bold"
                   >
@@ -2351,6 +2368,7 @@ export default function App() {
                     ConfActionAI: "Markov Signal",
                     ConflActionStack: "EMA Cross (10/20)",
                     ReversalAI: "Reversal Edge Score",
+                    LayaIntel: "Laya Intelligence",
                   }[colKey as keyof typeof visibleColumns];
 
                   const isChecked = visibleColumns[colKey as keyof typeof visibleColumns];
@@ -2523,6 +2541,19 @@ export default function App() {
                           <span>Best Entry (TP/SL)</span>
                           <span className="text-orange-400 font-bold transition-all text-[9px] translate-y-[0.5px]">
                             {sortField === "TargetMargin" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}
+                          </span>
+                        </div>
+                      </th>
+                    )}
+                    {visibleColumns.LayaIntel && (
+                      <th 
+                        className="py-3 px-3 text-center bg-orange-950/20 border-l border-[#2a2d32]/50 cursor-pointer hover:bg-[#15171e] hover:text-white transition-colors"
+                        onClick={() => handleSort("LayaIntel")}
+                      >
+                        <div className="flex items-center space-x-1.5 justify-center text-orange-400">
+                          <span>Laya Intelligence</span>
+                          <span className="text-orange-400 font-bold transition-all text-[9px] translate-y-[0.5px]">
+                            {sortField === "LayaIntel" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}
                           </span>
                         </div>
                       </th>
@@ -2916,6 +2947,13 @@ export default function App() {
                               </div>
                             </td>
                           )}
+
+                          {/* Laya Pre-Turn Intelligence Score */}
+                          {visibleColumns.LayaIntel && (
+                            <td className="py-1 px-3 text-center bg-orange-950/10 border-l border-[#2a2d32]/30">
+                              <LayaIntelCell intel={computeD5ComboLayaIntel(row)} />
+                            </td>
+                          )}
                         </tr>
                       );
                     })
@@ -3006,6 +3044,8 @@ export default function App() {
         <WtDashboard personalSymbols={personalSymbols} />
       ) : activeTab === "tsi_dashboard" ? (
         <TsiDashboard personalSymbols={personalSymbols} />
+      ) : activeTab === "d1_d4_laya" ? (
+        <D1ToD4LayaDashboard personalSymbols={personalSymbols} />
       ) : activeTab === "d8_screener" ? (
         <div className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6">
           <D8Screener personalSymbols={personalSymbols} />

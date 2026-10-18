@@ -168,6 +168,16 @@ The platform incorporates an online machine learning weight optimizer based on t
   $$\eta_{\text{effective}} = \eta \cdot e^{-0.15 \cdot \text{daysOld}}$$
   Each indicator family ($k \in \{\text{HMA}, \text{ST}, \text{WT}, \text{TSI}, \text{HTF}\}$) has its weight multiplied by $\exp\left(-\eta_{\text{effective}} \cdot \frac{\text{Errors}_k}{\text{Fired}_k}\right)$ and re-normalized, heavily favoring indicator families that have outperformed over the most recent 3–5 trading sessions.
 
+### 4.9 Laya System-1 Decision Schema Engine (`src/lib/laya-engine.ts`)
+Integrates a non-autoregressive System-1 decision schema (`LAYA_QUANT_QUESTIONS_SCHEMA`) modeled after `NandhaKishorM/laya` (`laya-ts`) alongside the MWUA weights:
+- **Structured State Serialization (`buildLayaStateString`)**: Encodes CTF and HTF indicator telemetry (`WT1/WT2`, `EMA10_20`, `HMA21`, `ST10_3`, `TSI`, and `HTF[WT,ST,HMA,GC,D7]`) into a compact single-pass state vector.
+- **Typed Decision Questions**:
+  1. **`setup_regime` (`type: "choice"`)**: Calibrated probability distribution across `trend_continuation`, `pullback_continuation`, `climax_reversal`, and `chop_avoid`.
+  2. **`conviction_tier` (`type: "score"`)**: Expected ordinal score $[0, 100]$ and probability distribution over `["low", "moderate", "high", "institutional"]`.
+  3. **`follow_through_prob` & `whipsaw_trap_risk` (`type: "noul"`)**: Calibrated binary `yes` probabilities $p \in [0, 1]$.
+- **RLCD Strictly Proper Scoring Calibration (`fitLayaCalibrationFromHistory`)**: Fits temperature scaling parameters $[T_{\text{choice}}, T_{\text{score}}, T_{\text{noul}}]$ by minimizing the Brier Score and Log Loss over the 50-day EOD audit log (`historical_assessments_FNO.json`), reporting Expected Calibration Error (`ECE`).
+- **Tournament Shortlisting (`runLayaTournament`)**: Implements `predictTournament` by splitting large candidate pools into balanced groups of 16 in Round 1 and ranking championship finalists in Round 2.
+
 ---
 
 ## 5. Signal Taxonomy & Priority Hierarchy
@@ -265,8 +275,13 @@ Returns the 50-day historical End-of-Day prediction audit log (`historical_asses
 - **Response**: `{ status: "ok", data: HistoricalAssessmentEntry[] }`
 
 ### `GET /api/dynamic-weights`
-Runs the Multiplicative Weights Update Algorithm (MWUA) with exponential time decay ($\lambda = 0.15$) over the historical audit log and returns the recalibrated `trend` and `reversal` indicator weights.
-- **Response**: `{ status: "ok", weights: { trend: Record<string, number>, reversal: Record<string, number> } }`
+Runs the Multiplicative Weights Update Algorithm (MWUA) with exponential time decay ($\lambda = 0.15$) over the historical audit log and returns the recalibrated `trend` and `reversal` indicator weights alongside `layaCalibration` (Brier score, Log Loss, ECE, and fitted temperatures) and `layaSchema`.
+- **Response**: `{ status: "ok", weights, layaCalibration, layaSchema }`
+
+### `POST /api/laya-decide`
+Executes a batched Laya System-1 decision pass (`choice`, `score`, `noul`) and 16-group Tournament elimination (`runLayaTournament`) across candidate symbols. Automatically forwards batch requests to a `laya[serve]` sidecar if `LAYA_SERVER_URL` is configured.
+- **Request Body**: `{ items: LayaBatchInputItem[], groupSize?: number, finalistsCount?: number }`
+- **Response**: `{ status: "ok", calibration, schema, batchLatencyMs, decisions: LayaDecisionOutput[] }`
 
 ### `POST /api/finalize-eod`
 Persists or updates today's EOD `Trend` or `Reversal` top bullish/bearish picks in `historical_assessments.json`.
@@ -319,6 +334,7 @@ To scan hundreds of symbols across 8+ timeframes without triggering Yahoo Financ
     │   ├── symbols-dataset.ts       # Base 143 NSE symbols with company descriptions & baseline prices
     │   └── watchlists.ts            # Personal, Nifty F&O (220+), and Nifty 500 symbol universes
     └── lib/
+        ├── laya-engine.ts           # Laya System-1 Decision Schema (choice, score, noul, RLCD calibration, tournament)
         ├── markov-engine.ts         # 3-state Markov Chain transition matrix & regime classifier
         ├── pine-math.ts             # Core Pine Script v5 math (WT, ST, HMA, SMA, EMA, WMA, MTF mapping)
         └── reversal-engine.ts       # Adaptive reversal scoring & pullback vs. climax detection
@@ -338,10 +354,12 @@ npm install
 ```
 
 ### 2. Environment Variables
-Copy `.env.example` to `.env` if using optional AI agent synthesis features (all core quantitative screening, charting, Markov regime analysis, and MWUA learning run 100% deterministically without any API keys):
+Copy `.env.example` to `.env` if using optional AI agent synthesis or an external `laya[serve]` sidecar (all core quantitative screening, charting, Markov regime analysis, MWUA learning, and RLCD-calibrated Laya System-1 decisions run 100% deterministically without any API keys):
 ```env
 GEMINI_API_KEY=your_gemini_api_key_optional
 MINIMAX_API_KEY=your_minimax_api_key_optional
+LAYA_SERVER_URL=http://localhost:8000_optional_laya_serve_sidecar
+LAYA_MODEL_DIR=./model_optional_laya_ts_onnx_dir
 ```
 
 ### 3. Run in Development Mode

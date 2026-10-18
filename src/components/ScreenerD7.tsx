@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { Timeframe } from "../types.js";
 import { FNO_SYMBOLS_LIST, NIFTY_500_SYMBOLS_LIST } from "../data/watchlists.js";
+import { computeLayaPreTurnIntel } from "../lib/laya-engine.js";
+import { LayaIntelCell } from "./LayaIntelCell.js";
 
 interface ScreenerTimeframeData {
   screenerCb: boolean;
@@ -339,6 +341,13 @@ export default function ScreenerD7({ personalSymbols }: ScreenerD7Props) {
     } else if (sortField === "ActiveTfCount") {
       const scoreA = infoA.count;
       const scoreB = infoB.count;
+      if (scoreA !== scoreB) {
+        return sortDirection === "desc" ? scoreB - scoreA : scoreA - scoreB;
+      }
+      return a.Symbol.localeCompare(b.Symbol);
+    } else if (sortField === "layaIntel") {
+      const scoreA = computeLayaPreTurnIntel(a, "d7_confl").score;
+      const scoreB = computeLayaPreTurnIntel(b, "d7_confl").score;
       if (scoreA !== scoreB) {
         return sortDirection === "desc" ? scoreB - scoreA : scoreA - scoreB;
       }
@@ -860,6 +869,24 @@ export default function ScreenerD7({ personalSymbols }: ScreenerD7Props) {
                   </div>
                 </th>
 
+                {/* Laya Intelligence Score column header */}
+                <th 
+                  className="p-3 w-[160px] text-center border-r border-[#1f2229]/60 cursor-pointer hover:text-white transition-all"
+                  onClick={() => handleSort("layaIntel")}
+                >
+                  <div className="flex flex-col items-center justify-center space-y-0.5">
+                    <div className="flex items-center justify-center space-x-1 text-emerald-400">
+                      <span>LAYA INTEL</span>
+                      {sortField === "layaIntel" ? (
+                        <span>{sortDirection === "asc" ? "▲" : "▼"}</span>
+                      ) : (
+                        <span className="text-[9px]">↕</span>
+                      )}
+                    </div>
+                    <span className="text-[7.5px] font-mono text-[#8e9299] opacity-80">PRE-TURN BULL/BEAR</span>
+                  </div>
+                </th>
+
                 {/* 8 Timeframe column headers */}
                 {timeframes.filter(tf => selectedTimeframes.includes(tf)).map((tf) => (
                   <th 
@@ -991,6 +1018,15 @@ export default function ScreenerD7({ personalSymbols }: ScreenerD7Props) {
                           <span className="text-zinc-600">0</span>
                         )}
                         <span className="text-[10px] text-zinc-500 font-normal"> / {selectedTimeframes.length}</span>
+                      </td>
+
+                      {/* Laya Intelligence Score Cell */}
+                      <td className="p-2 text-center border-r border-[#1f2229]/60">
+                        {row.isUnavailable ? (
+                          <span className="text-zinc-600">—</span>
+                        ) : (
+                          <LayaIntelCell intel={computeLayaPreTurnIntel(row, "d7_confl")} compact />
+                        )}
                       </td>
 
                       {/* Timeframe cells */}

@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { Timeframe } from "../types.js";
 import { FNO_SYMBOLS_LIST, NIFTY_500_SYMBOLS_LIST } from "../data/watchlists.js";
+import { computeLayaPreTurnIntel } from "../lib/laya-engine.js";
+import { LayaIntelCell } from "./LayaIntelCell.js";
 
 interface EmaTimeframeData {
   wt1: number;
@@ -257,6 +259,12 @@ export default function EmaDashboard({ personalSymbols }: EmaDashboardProps) {
     } else if (sortField === "revStrength") {
       valA = a.revStrength ?? 50;
       valB = b.revStrength ?? 50;
+      if (valA < valB) return sortDirection === "asc" ? -1 : 1;
+      if (valA > valB) return sortDirection === "asc" ? 1 : -1;
+      return 0;
+    } else if (sortField === "layaIntel") {
+      valA = computeLayaPreTurnIntel(a, "ema").score;
+      valB = computeLayaPreTurnIntel(b, "ema").score;
       if (valA < valB) return sortDirection === "asc" ? -1 : 1;
       if (valA > valB) return sortDirection === "asc" ? 1 : -1;
       return 0;
@@ -519,6 +527,23 @@ export default function EmaDashboard({ personalSymbols }: EmaDashboardProps) {
                     </div>
                   </th>
 
+                  <th 
+                    className="py-3.5 px-4 cursor-pointer hover:bg-[#15171e] hover:text-white transition-all text-center w-[175px]"
+                    onClick={() => handleSort("layaIntel")}
+                  >
+                    <div className="flex flex-col items-center space-y-0.5 justify-center">
+                      <div className="flex items-center space-x-1.5 justify-center text-emerald-400">
+                        <span>Laya Intelligence</span>
+                        <span className="font-bold text-[9px]">
+                          {sortField === "layaIntel" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}
+                        </span>
+                      </div>
+                      <span className="text-[7.5px] font-mono text-[#8e9299] opacity-80 tracking-tight uppercase">
+                        Pre-Turn Bull / Bear
+                      </span>
+                    </div>
+                  </th>
+
                   {timeframes.map(tf => (
                     <th 
                       key={tf}
@@ -646,6 +671,15 @@ export default function EmaDashboard({ personalSymbols }: EmaDashboardProps) {
                                 {row.revStrengthLabel ?? "NEUTRAL"}
                               </span>
                             </div>
+                          )}
+                        </td>
+
+                        {/* Laya Intelligence Score Column */}
+                        <td className="py-3.2 px-3 text-center">
+                          {row.isUnavailable ? (
+                            <span className="text-zinc-500 font-bold font-mono">---</span>
+                          ) : (
+                            <LayaIntelCell intel={computeLayaPreTurnIntel(row, "ema")} />
                           )}
                         </td>
 

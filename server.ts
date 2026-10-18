@@ -25,6 +25,20 @@ import {
   getUnavailablePineResults
 } from "./src/lib/pine-math.js";
 import { computeMarkovRegime, MarkovSignalResult } from "./src/lib/markov-engine.js";
+import {
+  LAYA_QUANT_QUESTIONS_SCHEMA,
+  buildLayaStateString,
+  evaluateLayaSystemOne,
+  fitLayaCalibrationFromHistory,
+  runLayaTournament,
+  LayaDecisionOutput
+} from "./src/lib/laya-engine.js";
+import {
+  computeGenuineWalkForwardAudit,
+  mergeVerifiedAuditLogs,
+  HistoricalAuditDayEntry
+} from "./src/lib/walk-forward-audit.js";
+import { VERIFIED_AUDIT_BASELINE } from "./src/data/verified-audit-baseline.js";
 
 // Multi-timeframe helper map
 function getHtfTimeframes(timeframe: Timeframe): { htf: Timeframe; hhtf: Timeframe } {
@@ -67,7 +81,8 @@ async function processInBatches<T, R>(items: T[], batchSize: number, fn: (item: 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // Initialize Google GenAI client lazily to avoid startup crashes if key is omitted
 let genAiClient: any = null;
@@ -2617,182 +2632,104 @@ const DEFAULT_MWUA_WEIGHTS = {
   reversal: { wtDeep: 20, wtSevere: 20, wtCross: 30, tsiDeep: 15, tsiSevere: 15, tsiCross: 20, stFlip: 15, hmaShift: 20, htfDiv: 15, baseMomentum: 15 }
 };
 
-async function getHistoricalAssessments(universe: string = "FNO", customSymbols?: string[]) {
-  const filePrefix = universe ? `_${universe.replace(/[^a-zA-Z0-9]/g, '')}` : "";
-  const historicalFile = path.join(process.cwd(), `historical_assessments${filePrefix}.json`);
-  
+let lastIncrementalSyncMs = 0;
+let incrementalSyncInFlight: Promise<HistoricalAuditDayEntry[]> | null = null;
+
+async function readJsonAuditFileSafe(filePath: string): Promise<HistoricalAuditDayEntry[]> {
   try {
-    const data = await fs.readFile(historicalFile, "utf-8");
-    return JSON.parse(data);
-  } catch (e) {
-    let SYMBOLS = customSymbols && customSymbols.length > 0 
-      ? customSymbols 
-      : ["RELIANCE", "HDFCBANK", "INFY", "TCS", "ITC", "LT", "SBIN", "BAJFINANCE", "BHARTIARTL", "KOTAKBANK", "AXISBANK", "ICICIBANK", "ASIANPAINT", "MARUTI", "SUNPHARMA"];
-    
-    // Shuffle and pick 15 max to avoid extremely slow fetching from Yahoo Finance
-    const shuffleArray = (arr: any[]) => arr.slice().sort(() => Math.random() - 0.5);
-    SYMBOLS = shuffleArray(SYMBOLS).slice(0, 15);
-
-    
-    // Dynamic import to avoid breaking anything if not found, but it should be there.
-    let yfInstance;
-    try {
-      const yfModule = await import('yahoo-finance2');
-      yfInstance = new yfModule.default();
-    } catch(err) {
-      console.error("Failed to load yahoo-finance2, using fallback", err);
-    }
-
-    if (yfInstance) {
-      try {
-        console.log("Fetching real data from Yahoo Finance for historical audit...");
-        const dataMap: any = {};
-        for (const sym of SYMBOLS) {
-          try {
-            const res = await yfInstance.chart(`${sym}.NS`, { period1: '2026-05-01', interval: '1d' });
-            dataMap[sym] = res.quotes;
-          } catch (e) {
-            dataMap[sym] = [];
-          }
-        }
-
-        const validSym = SYMBOLS.find(s => dataMap[s] && dataMap[s].length > 0) || SYMBOLS[0];
-        const relData = dataMap[validSym] || [];
-        const tradingDays = relData.map((q: any) => q.date.toISOString().split('T')[0]).sort();
-        const targetDays = tradingDays.slice(-51);
-        const finalData = [];
-        
-        const quoteMap: any = {};
-        try {
-          const quotes = await yfInstance.quote(SYMBOLS.map(sym => `${sym}.NS`));
-          for (const q of quotes) {
-            const sym = q.symbol.replace('.NS', '');
-            quoteMap[sym] = q;
-          }
-        } catch (e) {
-          console.error("Failed to fetch live quotes for ongoing day fallback", e);
-        }
-
-        const shuffle = (arr: any[]) => arr.slice().sort(() => Math.random() - 0.5);
-
-        for (let i = 0; i < targetDays.length - 1; i++) {
-          const todayStr = targetDays[i];
-          const nextDayStr = targetDays[i+1];
-          
-          const symbolPnls: any = {};
-          for (const sym of SYMBOLS) {
-            const quotes = dataMap[sym];
-            const todayQ = quotes.find((q: any) => q.date.toISOString().startsWith(todayStr));
-            const nextQ = quotes.find((q: any) => q.date.toISOString().startsWith(nextDayStr));
-            
-            if (todayQ && nextQ && todayQ.close) {
-              let closePrice = nextQ.close;
-              if (closePrice === null && i === targetDays.length - 2) {
-                closePrice = quoteMap[sym]?.regularMarketPrice || null;
-              }
-              
-              if (closePrice !== null) {
-                const pnl = ((closePrice - todayQ.close) / todayQ.close) * 100;
-                symbolPnls[sym] = pnl;
-              } else {
-                symbolPnls[sym] = 0;
-              }
-            } else {
-              symbolPnls[sym] = 0;
-            }
-          }
-          
-          const genPicksShuffled = (pred: "BULL"| "BEAR") => {
-            const picked = shuffle(SYMBOLS).slice(0, 10);
-            return picked.map((sym, idx) => {
-              const actualPnL = symbolPnls[sym] || 0;
-              const isWin = pred === "BULL" ? actualPnL > 0 : actualPnL < 0;
-              return {
-                rank: idx + 1,
-                symbol: sym,
-                prediction: pred,
-                actualOutcome: isWin,
-                pnlPercent: parseFloat(actualPnL.toFixed(2)),
-                indicators: { 
-                  hmaFired: Math.random() > 0.2, 
-                  stFired: Math.random() > 0.3, 
-                  wtFired: Math.random() > 0.1, 
-                  tsiFired: Math.random() > 0.2, 
-                  htfFired: Math.random() > 0.4 
-                }
-              };
-            });
-          };
-
-          finalData.push({
-            date: nextDayStr,
-            type: "Trend",
-            bullishPicks: genPicksShuffled("BULL"),
-            bearishPicks: genPicksShuffled("BEAR")
-          });
-          finalData.push({
-            date: nextDayStr,
-            type: "Reversal",
-            bullishPicks: genPicksShuffled("BULL"),
-            bearishPicks: genPicksShuffled("BEAR")
-          });
-        }
-        
-        await fs.writeFile(historicalFile, JSON.stringify(finalData, null, 2));
-        return finalData;
-      } catch(err) {
-        console.error("Error generating Yahoo Finance history", err);
-      }
-    }
-
-    // Fallback if YF fails
-    const data = [];
-    const now = new Date();
-    
-    const shuffleFallback = (arr: any[]) => arr.slice().sort(() => Math.random() - 0.5);
-
-    for (let i = 50; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(now.getDate() - i);
-      const dateStr = d.toISOString().split("T")[0];
-      
-      const genPicks = (pred: "BULL" | "BEAR") => shuffleFallback(SYMBOLS).slice(0, 10).map((sym, idx) => ({
-        rank: idx + 1,
-        symbol: sym,
-        prediction: pred,
-        actualOutcome: Math.random() > 0.4,
-        pnlPercent: parseFloat(((Math.random() * 10) - 5).toFixed(2)),
-        indicators: { hmaFired: Math.random() > 0.2, stFired: Math.random() > 0.3, wtFired: Math.random() > 0.1, tsiFired: Math.random() > 0.2, htfFired: Math.random() > 0.4 }
-      }));
-      
-      data.push({
-        date: dateStr,
-        type: "Trend",
-        bullishPicks: genPicks("BULL"),
-        bearishPicks: genPicks("BEAR")
-      });
-      data.push({
-        date: dateStr,
-        type: "Reversal",
-        bullishPicks: genPicks("BULL"),
-        bearishPicks: genPicks("BEAR")
-      });
-    }
-    await fs.writeFile(historicalFile, JSON.stringify(data, null, 2));
-    return data;
+    const raw = await fs.readFile(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 }
 
+async function persistMergedAuditFiles(merged: HistoricalAuditDayEntry[], universe: string = "FNO") {
+  const cleanUni = universe ? universe.replace(/[^a-zA-Z0-9]/g, "") : "FNO";
+  const uniFile = path.join(process.cwd(), `historical_assessments_${cleanUni}.json`);
+  const fnoFile = path.join(process.cwd(), "historical_assessments_FNO.json");
+  const jsonStr = JSON.stringify(merged, null, 2);
+
+  await Promise.all([
+    fs.writeFile(uniFile, jsonStr).catch(() => {}),
+    fs.writeFile(fnoFile, jsonStr).catch(() => {}),
+    fs.writeFile(HISTORICAL_ASSESSMENTS_FILE, jsonStr).catch(() => {})
+  ]);
+}
+
+async function getHistoricalAssessments(
+  universe: string = "FNO",
+  customSymbols?: string[],
+  forceIncrementalCheck = false
+): Promise<HistoricalAuditDayEntry[]> {
+  const cleanUni = universe ? universe.replace(/[^a-zA-Z0-9]/g, "") : "FNO";
+  const historicalFile = path.join(process.cwd(), `historical_assessments_${cleanUni}.json`);
+  const fnoFile = path.join(process.cwd(), "historical_assessments_FNO.json");
+
+  const [uniDisk, fnoDisk, rootDisk] = await Promise.all([
+    readJsonAuditFileSafe(historicalFile),
+    readJsonAuditFileSafe(fnoFile),
+    readJsonAuditFileSafe(HISTORICAL_ASSESSMENTS_FILE)
+  ]);
+
+  // Merge compiled VERIFIED_AUDIT_BASELINE with all disk archives so updates/rebuilds never lose history
+  let merged = mergeVerifiedAuditLogs(VERIFIED_AUDIT_BASELINE, fnoDisk, rootDisk, uniDisk);
+
+  // If the target disk file had legacy non-walk-forward entries or fewer records, heal it immediately
+  if (uniDisk.length < merged.length || uniDisk.some(e => !e.isGenuineWalkForward)) {
+    await persistMergedAuditFiles(merged, cleanUni);
+  }
+
+  // Check if a new trading day has completed on Yahoo Finance that needs incremental walk-forward evaluation
+  const nowMs = Date.now();
+  const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" });
+  const todayIST = formatter.format(new Date(nowMs));
+  const latestRecordedDate = merged.length > 0 ? merged[merged.length - 1].date : "";
+
+  const shouldCheckIncremental =
+    forceIncrementalCheck ||
+    (latestRecordedDate < todayIST && nowMs - lastIncrementalSyncMs > 15 * 60 * 1000);
+
+  if (shouldCheckIncremental && !incrementalSyncInFlight) {
+    lastIncrementalSyncMs = nowMs;
+    incrementalSyncInFlight = (async () => {
+      try {
+        const updated = await computeGenuineWalkForwardAudit(customSymbols, merged, 50);
+        const reMerged = mergeVerifiedAuditLogs(merged, updated);
+        if (reMerged.length >= merged.length) {
+          await persistMergedAuditFiles(reMerged, cleanUni);
+          return reMerged;
+        }
+      } catch (err) {
+        console.error("[Walk-Forward Audit] Incremental sync error:", err);
+      } finally {
+        incrementalSyncInFlight = null;
+      }
+      return merged;
+    })();
+
+    if (forceIncrementalCheck) {
+      merged = await incrementalSyncInFlight;
+    }
+  }
+
+  return merged;
+}
+
 app.get("/api/historical-audit", async (req, res) => {
-  const data = await getHistoricalAssessments();
-  
+  const universe = (req.query.universe as string) || "FNO";
+  const symbolsParam = (req.query.symbols as string) || "";
+  const forceSync = req.query.refresh === "true";
+  const customSymbols = symbolsParam ? symbolsParam.split(",").map(s => s.trim()).filter(Boolean) : undefined;
+
+  const data = await getHistoricalAssessments(universe, customSymbols, forceSync);
+
   const now = new Date();
-  // Get YYYY-MM-DD in IST
-  const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' });
+  const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" });
   const todayIST = formatter.format(now);
-  
-  // Get Hour in IST (0-23)
-  const hourString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false });
+
+  const hourString = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata", hour: "numeric", hour12: false });
   const currentHourIST = parseInt(hourString, 10);
 
   let filteredData = data;
@@ -2800,7 +2737,41 @@ app.get("/api/historical-audit", async (req, res) => {
     filteredData = data.filter((d: any) => d.date !== todayIST);
   }
 
-  res.json({ status: "ok", data: [...filteredData].reverse() });
+  res.json({
+    status: "ok",
+    engine: "walk_forward_v2_real",
+    totalSessions: Math.floor(filteredData.length / 2),
+    data: [...filteredData].reverse()
+  });
+});
+
+app.post("/api/sync-historical-audit", async (req, res) => {
+  try {
+    const universe = (req.body?.universe as string) || "FNO";
+    const clientEntries: HistoricalAuditDayEntry[] = Array.isArray(req.body?.entries) ? req.body.entries : [];
+    const serverEntries = await getHistoricalAssessments(universe);
+
+    const unified = mergeVerifiedAuditLogs(VERIFIED_AUDIT_BASELINE, serverEntries, clientEntries);
+    await persistMergedAuditFiles(unified, universe);
+
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" });
+    const todayIST = formatter.format(now);
+    const hourString = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata", hour: "numeric", hour12: false });
+    const currentHourIST = parseInt(hourString, 10);
+
+    const visible = currentHourIST < 16 ? unified.filter(d => d.date !== todayIST) : unified;
+
+    res.json({
+      status: "ok",
+      engine: "walk_forward_v2_real",
+      totalSessions: Math.floor(visible.length / 2),
+      data: [...visible].reverse()
+    });
+  } catch (err: any) {
+    console.error("[Walk-Forward Audit] Client vault sync error:", err);
+    res.status(500).json({ status: "error", message: err.message || "Failed to sync audit vault" });
+  }
 });
 
 app.get("/api/dynamic-weights", async (req, res) => {
@@ -2864,41 +2835,142 @@ app.get("/api/dynamic-weights", async (req, res) => {
   const revRatio = 185 / currentRevSum;
   for (const k in weights.reversal) weights.reversal[k] = Math.round(weights.reversal[k] * revRatio);
 
-  res.json({ status: "ok", weights });
+  const runtimeMode = process.env.LAYA_SERVER_URL
+    ? "laya-sidecar"
+    : process.env.LAYA_MODEL_DIR
+    ? "laya-ts-onnx"
+    : "laya-rlcd-calibrated";
+  const layaCalibration = fitLayaCalibrationFromHistory(history, runtimeMode);
+
+  res.json({
+    status: "ok",
+    weights,
+    layaCalibration,
+    layaSchema: LAYA_QUANT_QUESTIONS_SCHEMA
+  });
 });
 
-app.post("/api/finalize-eod", express.json(), async (req, res) => {
-  const data = await getHistoricalAssessments();
-  const today = new Date().toISOString().split("T")[0];
+app.post("/api/laya-decide", express.json({ limit: "5mb" }), async (req, res) => {
+  try {
+    const tStart = performance.now();
+    const items: any[] = Array.isArray(req.body?.items) ? req.body.items : [];
+    const groupSize = Number(req.body?.groupSize) || 16;
+    const finalistsCount = Number(req.body?.finalistsCount) || 10;
+
+    const history = await getHistoricalAssessments();
+    const sidecarUrl = process.env.LAYA_SERVER_URL?.trim();
+    const runtimeMode = sidecarUrl
+      ? "laya-sidecar"
+      : process.env.LAYA_MODEL_DIR
+      ? "laya-ts-onnx"
+      : "laya-rlcd-calibrated";
+
+    const calibration = fitLayaCalibrationFromHistory(history, runtimeMode);
+
+    let decisions: LayaDecisionOutput[] = items.map((item) =>
+      evaluateLayaSystemOne(
+        item.symbol,
+        item.timeframe || "1D",
+        item.mode === "trend" ? "trend" : "reversal",
+        item.direction === "BEAR" ? "BEAR" : "BULL",
+        item.tfData,
+        Number(item.mwuaScore) || 0,
+        Number(item.maxMwuaScore) || (item.mode === "trend" ? 135 : 185),
+        calibration.temperature,
+        runtimeMode
+      )
+    );
+
+    // Optional Laya HTTP sidecar (`laya[serve]`) batch pass override when LAYA_SERVER_URL is set
+    if (sidecarUrl && decisions.length > 0) {
+      try {
+        const states = decisions.map((d) => d.state);
+        const sidecarRes = await fetch(`${sidecarUrl.replace(/\/$/, "")}/predict_batch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            states,
+            questions: LAYA_QUANT_QUESTIONS_SCHEMA,
+            batch_size: 32
+          })
+        });
+        if (sidecarRes.ok) {
+          const sidecarPayload: any = await sidecarRes.json();
+          const batchResults: any[] = Array.isArray(sidecarPayload?.results) ? sidecarPayload.results : [];
+          decisions = decisions.map((dec, idx) => {
+            const remote = batchResults[idx]?.answers;
+            if (!remote) return dec;
+            const ftNoul = Number(remote.follow_through_prob?.noul ?? dec.answers.follow_through_prob.noul);
+            const wtNoul = Number(remote.whipsaw_trap_risk?.noul ?? dec.answers.whipsaw_trap_risk.noul);
+            return {
+              ...dec,
+              answers: {
+                setup_regime: remote.setup_regime || dec.answers.setup_regime,
+                conviction_tier: remote.conviction_tier || dec.answers.conviction_tier,
+                follow_through_prob: { noul: ftNoul, verdict: ftNoul >= 0.5 },
+                whipsaw_trap_risk: { noul: wtNoul, verdict: wtNoul >= 0.5 }
+              }
+            };
+          });
+        }
+      } catch (sidecarErr) {
+        // Sidecar unreachable; retain calibrated local RLCD System-1 decisions
+      }
+    }
+
+    // Group by direction (BULL / BEAR) and run Laya Tournament elimination (`predictTournament`)
+    const bullItems = decisions.filter((d) => d.direction === "BULL");
+    const bearItems = decisions.filter((d) => d.direction === "BEAR");
+    const bullTournament = runLayaTournament(bullItems, groupSize, finalistsCount);
+    const bearTournament = runLayaTournament(bearItems, groupSize, finalistsCount);
+
+    const totalLatencyMs = Number((performance.now() - tStart).toFixed(2));
+
+    res.json({
+      status: "ok",
+      calibration,
+      schema: LAYA_QUANT_QUESTIONS_SCHEMA,
+      batchLatencyMs: totalLatencyMs,
+      decisions: [...bullTournament, ...bearTournament]
+    });
+  } catch (err: any) {
+    console.error("Error in /api/laya-decide:", err);
+    res.status(500).json({ status: "error", message: err.message || "Laya decision pass failed" });
+  }
+});
+
+app.post("/api/finalize-eod", async (req, res) => {
+  const universe = (req.body?.universe as string) || "FNO";
+  const data = await getHistoricalAssessments(universe);
+  const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" });
+  const today = formatter.format(new Date());
   const existingIdx = data.findIndex((d: any) => d.date === today && d.type === req.body.type);
-  
-  const newEntry = {
+
+  const newEntry: HistoricalAuditDayEntry = {
     date: today,
-    type: req.body.type,
+    signalDate: today,
+    type: req.body.type === "Trend" ? "Trend" : "Reversal",
+    isGenuineWalkForward: true,
     bullishPicks: req.body.bullishPicks || [],
     bearishPicks: req.body.bearishPicks || []
   };
-  
+
   if (existingIdx > -1) {
     data[existingIdx] = newEntry;
   } else {
     data.push(newEntry);
   }
-  
-  await fs.writeFile(HISTORICAL_ASSESSMENTS_FILE, JSON.stringify(data, null, 2));
-  res.json({ status: "ok" });
+
+  const merged = mergeVerifiedAuditLogs(VERIFIED_AUDIT_BASELINE, data);
+  await persistMergedAuditFiles(merged, universe);
+  res.json({ status: "ok", entry: newEntry, totalEntries: merged.length });
 });
 
 cron.schedule('0 16 * * 1-5', async () => {
-  console.log("Running EOD Automated Data Collection (4:00 PM IST)...");
+  console.log("Running EOD Automated Walk-Forward Data Collection (4:00 PM IST)...");
   try {
-    const today = new Date().toISOString().split("T")[0];
-    
-    console.log(`[MWUA Engine] Fetching actual closing data vs today's close to automatically validate win/loss states...`);
-    // In a fully robust system, this block would fetch the T-1 and T closing prices for the Top 20 picks,
-    // calculate actualOutcome, update historical_assessments.json, and fetch the new day's Top 20.
-    
-    console.log(`[MWUA Engine] EOD Assessment completed. Data automatically evaluated and logged for ` + today);
+    const updated = await getHistoricalAssessments("FNO", undefined, true);
+    console.log(`[MWUA & Walk-Forward Engine] EOD Assessment completed. Total verified records retained: ${updated.length}`);
   } catch(err) {
     console.error("[MWUA Engine] Cron Job Error:", err);
   }

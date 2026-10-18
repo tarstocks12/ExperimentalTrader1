@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ArrowUpRight, ArrowDownRight, RefreshCw, SlidersHorizontal, Settings2, ArrowDownUp, ExternalLink } from 'lucide-react';
 import type { Timeframe } from '../types';
 import { FNO_SYMBOLS_LIST, NIFTY_500_SYMBOLS_LIST } from '../data/watchlists';
+import { computeLayaPreTurnIntel } from '../lib/laya-engine';
+import { LayaIntelCell } from './LayaIntelCell';
 
 type IndicatorType = "NONE" | "HMA" | "ST" | "WT" | "TSI";
 type ModeType = "CTF" | "HTF1";
@@ -269,6 +271,12 @@ export function D8Screener({ personalSymbols = [] }: { personalSymbols?: string[
         const barsB = cellB && !cellB.isUnavailable ? cellB.bars : 999999;
         return sortSetup.sort === "ASC" ? barsA - barsB : barsB - barsA;
       });
+    } else {
+      filtered.sort((a, b) => {
+        const scoreA = computeLayaPreTurnIntel(a, "d8_setup").score;
+        const scoreB = computeLayaPreTurnIntel(b, "d8_setup").score;
+        return scoreB - scoreA;
+      });
     }
 
     return filtered;
@@ -465,6 +473,12 @@ export function D8Screener({ personalSymbols = [] }: { personalSymbols?: string[
                 <th className="p-4 font-semibold text-[#8e9299] text-xs uppercase tracking-wider min-w-[120px]">
                   Symbol
                 </th>
+                <th className="p-4 font-semibold text-emerald-400 text-xs uppercase tracking-wider text-center min-w-[165px]">
+                  <div className="flex flex-col items-center">
+                    <span>Laya Intelligence</span>
+                    <span className="text-[9px] font-mono text-zinc-500 font-normal">Pre-Turn Bull / Bear</span>
+                  </div>
+                </th>
                 {activeSetups.map((setup, index) => (
                   <th key={setup.id} className="p-4 font-semibold text-[#8e9299] text-xs uppercase tracking-wider text-center min-w-[120px]">
                     <div className="flex flex-col items-center gap-1.5">
@@ -503,6 +517,13 @@ export function D8Screener({ personalSymbols = [] }: { personalSymbols?: string[
                         <ExternalLink className="h-3.5 w-3.5" />
                       </a>
                     </div>
+                  </td>
+                  <td className="p-4 text-center">
+                    {row.isUnavailable ? (
+                      <span className="text-zinc-600 text-xs">---</span>
+                    ) : (
+                      <LayaIntelCell intel={computeLayaPreTurnIntel(row, "d8_setup")} />
+                    )}
                   </td>
                   {activeSetups.map(setup => {
                     const cell = getCellData(row, setup);
