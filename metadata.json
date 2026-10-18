@@ -1,0 +1,6 @@
+{
+  "name": "Quant SWT Screener",
+  "description": "Multi-Timeframe Quantitative Screener and AI Agent Engine using WaveTrend and SuperTrend indicators.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
